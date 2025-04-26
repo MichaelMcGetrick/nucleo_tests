@@ -155,7 +155,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 #ifdef UART_DEBUG
-  print_log("Starting timer test .... \n\r");
+  print_log("Starting timer test for stm32h7s3l8 ..... \n\r");
 #endif
   MX_RTC_Init();  //Start the RTC clock
   HAL_TIM_Base_Start_IT(&htim1);  // Start TIM1
