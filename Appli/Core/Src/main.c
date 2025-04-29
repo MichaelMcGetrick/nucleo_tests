@@ -39,7 +39,11 @@
 #define print_log(f_, ...) printf("%s ", timestamp()), printf((f_), ##__VA_ARGS__), printf("\n")
 // Define flag for UART logging
 #define TEST_PERIOD	60
-#define UART_DEBUG
+#define UART_DEBUG				//Switch on general debugging
+#define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
+#define TEST_RTC				// Measure Timer test period using RTC
+
+
 
 
 /* USER CODE END PD */
@@ -59,12 +63,21 @@ UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 volatile unsigned int rtc_flg = 0;
-volatile unsigned int timer_flg = 0;
+volatile unsigned int itr_cnt = 0;
+volatile unsigned int sample_flg = 0;
 char * timestamp();
 char *time_str = "";
-unsigned int ctr = 0;
-unsigned int counter = 0;
-unsigned int test_per = 0;
+
+unsigned int exp_cnts = 0;  //Expected sample count for timer test period
+// Sampling attributes
+float SYS_CLK  = 3E+8; //300MHz
+float SAMPLE_FREQ =  1E+1;
+float TIMER1_FREQ = 1E+4;
+unsigned int TIMER1_ARR = 0; // Timer1 Counter
+//unsigned int NUM_OV_PER_SAM_PER = 0; //Number of overflows per sample period
+unsigned int PSC;
+
+
 
 /* USER CODE END PV */
 
@@ -105,11 +118,23 @@ int iar_fputc(int ch);
   * @retval int
   */
 int main(void)
+
 {
 
   /* USER CODE BEGIN 1 */
+	// Initialise timer variables:
 
-  /* USER CODE END 1 */
+	if (SAMPLE_FREQ >= 1.0E+4)
+	{
+		TIMER1_ARR = 1;
+		PSC =  (int) ( SYS_CLK / (2 * TIMER1_FREQ)) - 1;
+	}
+	else
+	{
+		TIMER1_ARR = (TIMER1_FREQ / SAMPLE_FREQ) - 1;
+		PSC =  (int) ( SYS_CLK / (TIMER1_FREQ)) - 1;
+	}
+	/* USER CODE END 1 */
 
   /* Enable the CPU Cache */
 
@@ -150,40 +175,63 @@ int main(void)
   printf("Platform: STM32H7S3L8              \n\r");
   printf("                                \n\r");
   printf("******************************* \n\r");
+  printf("TIMER1_ARR: %d\n\r",TIMER1_ARR);
+  printf("PSC: %d\n\r",(int) PSC);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 #ifdef UART_DEBUG
   print_log("Starting timer test for stm32h7s3l8 ..... \n\r");
+#ifdef TEST_RTC
+  print_log("(Test period measured using RTC clock) \n\r");
 #endif
+#endif
+
+  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+#ifdef TEST_RTC
   MX_RTC_Init();  //Start the RTC clock
+  print_log("Timestamp -> Start .. \n\r");
   HAL_TIM_Base_Start_IT(&htim1);  // Start TIM1
+#endif
+
+
   while (1)
   {
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+
+#ifdef TEST_RTC
 	  if (rtc_flg == 1)
 	  {
 		  rtc_flg = 0;
 		  break;
 
 	  }
-	  if (timer_flg == 1)
+#endif
+
+	  if (sample_flg == 1)
 	  {
-		  timer_flg = 0;
-		  test_per += 1;
-		  counter += htim1.Init.Period;
-		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
-		  print_log("Sec count: %d\n\r", test_per);
+		  sample_flg = 0;
+		  // Sample ADC
+#ifdef UART_DEBUG_SAMPLING
+		  print_log ("Int. ctr value: %d\n\r",itr_cnt);
+#endif
+
 
 	  }
+
   }
+
+  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
 #ifdef UART_DEBUG
-	print_log ("Counter value: %d\n\r",counter);
-	print_log ("Completing test .....\n\r");
+  	print_log("Timestamp -> End .. \n\r");
+	print_log ("Int. Ctr value: %d\n\r",itr_cnt);
+	print_log ("SAMPLE_FREQ: %d\n\r",(int) SAMPLE_FREQ);
 #endif
 
 
@@ -302,9 +350,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 29999;
+  htim1.Init.Prescaler = PSC; //14999; //29999;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 10000;
+  htim1.Init.Period = TIMER1_ARR;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -500,8 +548,11 @@ void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
   * @retval None
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-	timer_flg = 1;
+	itr_cnt += 1;
+	sample_flg = 1;
+
 }
+
 
 /* USER CODE END 4 */
 
