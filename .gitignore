@@ -1,7 +1,6 @@
 .mxproject
 .settings
 .project
-nucleo_tests.ioc
 Appli/Core/Startup
 Appli/Debug
 Appli/STM32*.ld
