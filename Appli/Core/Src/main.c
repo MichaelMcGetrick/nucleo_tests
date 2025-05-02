@@ -26,6 +26,7 @@
 #include <stdio.h>
 
 
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,8 +44,13 @@
 #define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
 #define TEST_RTC				// Measure Timer test period using RTC
 
+//Flag to process raw ADC values
+//#define RAW_ADC
 
-
+// Analog reference voltage (Vref+)
+#define VREF                       (3300UL)
+//Conversion factor for 12-bit ADC resolution
+#define ADC_BIT_FAC					4096 - 1
 
 /* USER CODE END PD */
 
@@ -54,6 +60,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
 
 RTC_HandleTypeDef hrtc;
 
@@ -66,16 +73,18 @@ volatile unsigned int rtc_flg = 0;
 volatile unsigned int itr_cnt = 0;
 volatile unsigned int sample_flg = 0;
 char * timestamp();
+uint16_t adc_mv(unsigned int);
 char *time_str = "";
 
 unsigned int exp_cnts = 0;  //Expected sample count for timer test period
 // Sampling attributes
 float SYS_CLK  = 3E+8; //300MHz
-float SAMPLE_FREQ =  1E+1;
+float SAMPLE_FREQ =  1E+0;
 float TIMER1_FREQ = 1E+4;
 unsigned int TIMER1_ARR = 0; // Timer1 Counter
 //unsigned int NUM_OV_PER_SAM_PER = 0; //Number of overflows per sample period
 unsigned int PSC;
+unsigned int adc_val, adc_val_mv;
 
 
 
@@ -86,6 +95,7 @@ static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_RTC_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 #if defined(__ICCARM__)
 __ATTRIBUTES size_t __write(int, const unsigned char *, size_t);
@@ -104,19 +114,16 @@ int iar_fputc(int ch);
 
 /* USER CODE END PFP */
 
-
 /* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 2 */
+/* USER CODE BEGIN 0 */
 
-
-/* USER CODE END 2 */
+/* USER CODE END 0 */
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
 int main(void)
-
 {
 
   /* USER CODE BEGIN 1 */
@@ -132,7 +139,7 @@ int main(void)
 		TIMER1_ARR = (TIMER1_FREQ / SAMPLE_FREQ) - 1;
 		PSC =  (int) ( SYS_CLK / (TIMER1_FREQ)) - 1;
 	}
-	/* USER CODE END 1 */
+  /* USER CODE END 1 */
 
   /* Enable the CPU Cache */
 
@@ -165,16 +172,11 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM1_Init();
+  MX_RTC_Init();
   MX_USART3_UART_Init();
-
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-  printf("\n\r*******************************\n\r");
-  printf("TIMER TESTS:                       \n\r");
-  printf("Platform: STM32H7S3L8              \n\r");
-  printf("                                \n\r");
-  printf("******************************* \n\r");
-  printf("TIMER1_ARR: %d\n\r",TIMER1_ARR);
-  printf("PSC: %d\n\r",(int) PSC);
+
 
   /* USER CODE END 2 */
 
@@ -182,19 +184,35 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 #ifdef UART_DEBUG
   print_log("Starting timer test for stm32h7s3l8 ..... \n\r");
+  print_log("PSC: %d\n\r",PSC);
+  print_log("TIMER1_ARR: %d\n\r",TIMER1_ARR);
+  print_log ("SAMPLE_FREQ: %d\n\r",(int) SAMPLE_FREQ);
 #ifdef TEST_RTC
   print_log("(Test period measured using RTC clock) \n\r");
 #endif
 #endif
 
+  // calibrate ADC for better accuracy and start it w/ interrupt
+  if(HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
+  {
+	  Error_Handler();
+  }
+
+
   HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
 #ifdef TEST_RTC
   MX_RTC_Init();  //Start the RTC clock
   print_log("Timestamp -> Start .. \n\r");
-  HAL_TIM_Base_Start_IT(&htim1);  // Start TIM1
 #endif
-
-
+  if(HAL_ADC_Start_IT(&hadc1) != HAL_OK)
+  {
+   	  Error_Handler();
+  }
+  // Start TIMER1
+  if(HAL_TIM_Base_Start(&htim1) != HAL_OK)
+  {
+	 Error_Handler();
+  }
   while (1)
   {
 
@@ -207,6 +225,8 @@ int main(void)
 	  if (rtc_flg == 1)
 	  {
 		  rtc_flg = 0;
+		  //Stop timer
+		  HAL_TIM_Base_Stop(&htim1);
 		  break;
 
 	  }
@@ -216,8 +236,13 @@ int main(void)
 	  {
 		  sample_flg = 0;
 		  // Sample ADC
+
 #ifdef UART_DEBUG_SAMPLING
-		  print_log ("Int. ctr value: %d\n\r",itr_cnt);
+#ifdef RAW_ADC
+		  print_log ("ADC value: %d  Sample Count: %d\n\r",adc_val,itr_cnt);
+#else
+		  print_log ("ADC value (mV): %d  Sample Count: %d\n\r",adc_mv(adc_val),itr_cnt);
+#endif
 #endif
 
 
@@ -229,13 +254,84 @@ int main(void)
 #ifdef UART_DEBUG
   	print_log("Timestamp -> End .. \n\r");
 	print_log ("Int. Ctr value: %d\n\r",itr_cnt);
-	print_log ("SAMPLE_FREQ: %d\n\r",(int) SAMPLE_FREQ);
 #endif
 
 
   /* USER CODE END 3 */
 }
 
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+	/* USER CODE BEGIN ADC1_Init 0 */
+
+	  /* USER CODE END ADC1_Init 0 */
+
+	  ADC_MultiModeTypeDef multimode = {0};
+	  ADC_ChannelConfTypeDef sConfig = {0};
+
+	  /* USER CODE BEGIN ADC1_Init 1 */
+
+	  /* USER CODE END ADC1_Init 1 */
+
+	  /** Common config
+	  */
+	  hadc1.Instance = ADC1;
+	  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+	  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+	  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+	  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+	  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+	  hadc1.Init.LowPowerAutoWait = DISABLE;
+	  hadc1.Init.ContinuousConvMode = DISABLE;
+	  hadc1.Init.NbrOfConversion = 1;
+	  hadc1.Init.DiscontinuousConvMode = DISABLE;
+	  //hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+	  //hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+	  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T1_TRGO;
+	  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+
+	  hadc1.Init.SamplingMode = ADC_SAMPLING_MODE_NORMAL;
+	  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;
+	  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
+	  hadc1.Init.OversamplingMode = DISABLE;
+	  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+	  {
+	    Error_Handler();
+	  }
+
+	  /** Configure the ADC multi-mode
+	  */
+	  multimode.Mode = ADC_MODE_INDEPENDENT;
+	  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+	  {
+	    Error_Handler();
+	  }
+
+	  /** Configure Regular Channel
+	  */
+	  sConfig.Channel = ADC_CHANNEL_2;
+	  sConfig.Rank = ADC_REGULAR_RANK_1;
+	  sConfig.SamplingTime = ADC_SAMPLETIME_247CYCLES_5;
+	  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+	  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+	  sConfig.Offset = 0;
+	  sConfig.OffsetSign = ADC_OFFSET_SIGN_NEGATIVE;
+	  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+	  {
+	    Error_Handler();
+	  }
+	  /* USER CODE BEGIN ADC1_Init 2 */
+
+	  /* USER CODE END ADC1_Init 2 */
+
+
+}
 
 /* USER CODE BEGIN 4 */
 
@@ -361,8 +457,12 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  //NB: The following trigger definitions worked with Timer only!
+  // We require event update configuration
+  //sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  //sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
   {
@@ -527,41 +627,10 @@ size_t __write(int file, unsigned char const *ptr, size_t len)
 
 /* USER CODE BEGIN 5 */
 /**
-  * @brief  Alarm callback
-  * @param  hrtc : RTC handle
-  * @retval None
+  * @brief  Return timestamp for current time.
+  * @param  None
+  * @retval char* - timestamp
   */
-
-
-void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
-{
-
-  // Turn LD1 on: Alarm generation
-  //BSP_LED_On(LD1);
-   rtc_flg = 1;
-	//HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-
-
-}
-
-
-/**
-  * @brief  TIMER1 Callback
-  * @param  htim : Timer handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-	itr_cnt += 1;
-	sample_flg = 1;
-
-}
-
-
-/* USER CODE END 5 */
-
-
-/* USER CODE BEGIN 6 */
-// Timestamp string for logging with printf:
 char * timestamp()
 {
 
@@ -589,7 +658,56 @@ char * timestamp()
 
 
 }
-/* USER CODE END 6 */
+
+/**
+  * @brief  Convert raw ADC value to mV.
+  * @param  ADC raw value
+  * @retval Value in mV
+  */
+uint16_t adc_mv(unsigned int val)
+{
+	return  (VREF * val) / ADC_BIT_FAC;
+
+}
+
+
+/* USER CODE END 5 */
+
+
+/* USER CODE BEGIN 7 */
+/**
+  * @brief  Alarm callback
+  * @param  hrtc : RTC handle
+  * @retval None
+  */
+void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
+{
+
+  // Turn LD1 on: Alarm generation
+  //BSP_LED_On(LD1);
+   rtc_flg = 1;
+	//HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+
+
+}
+
+/**
+  * @brief  ADC callback
+  * @param  hadc : ADC handle
+  * @retval None
+  */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+	sample_flg = 1;
+	adc_val = HAL_ADC_GetValue(&hadc1);
+	itr_cnt += 1;
+	// Toggle the Green LED
+    //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+}
+
+
+/* USER CODE END 7 */
+
 
 
 
@@ -607,6 +725,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
+
 
 #ifdef  USE_FULL_ASSERT
 /**
