@@ -101,8 +101,6 @@ int iar_fputc(int ch);
 #elif defined(__GNUC__)
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #endif /* __ICCARM__ */
-//static void MPU_AdjustRegionAddressSize(uint32_t Address, uint32_t Size, MPU_Region_InitTypeDef* pInit);
-//static void MPU_Config(void);
 
 /* USER CODE END PFP */
 
@@ -237,6 +235,9 @@ int main(void)
 
   /* USER CODE END 3 */
 }
+
+
+/* USER CODE BEGIN 4 */
 
 /**
   * @brief RTC Initialization Function
@@ -449,38 +450,6 @@ static void MX_USART3_UART_Init(void)
 
 }
 
-/* USER CODE BEGIN 3 */
-/**
-  * @brief  Retargets the C library printf function to the USART.
-  * @param  None
-  * @retval None
-  */
-PUTCHAR_PROTOTYPE
-{
-  /* Place your implementation of fputc here */
-  /* e.g. write a character to the USART3 and Loop until the end of transmission */
-  HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, 0xFFFF);
-
-  return ch;
-}
-
-#if defined(__ICCARM__)
-size_t __write(int file, unsigned char const *ptr, size_t len)
-{
-  size_t idx;
-  unsigned char const *pdata = ptr;
-
-  for (idx = 0; idx < len; idx++)
-  {
-    iar_fputc((int)*pdata);
-    pdata++;
-  }
-  return len;
-}
-#endif /* __ICCARM__ */
-/* USER CODE END 3 */
-
-
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -522,7 +491,41 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
-/* USER CODE BEGIN 4 */
+
+
+/**
+  * @brief  Retargets the C library printf function to the USART.
+  * @param  None
+  * @retval None
+  */
+PUTCHAR_PROTOTYPE
+{
+  /* Place your implementation of fputc here */
+  /* e.g. write a character to the USART3 and Loop until the end of transmission */
+  HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, 0xFFFF);
+
+  return ch;
+}
+
+#if defined(__ICCARM__)
+size_t __write(int file, unsigned char const *ptr, size_t len)
+{
+  size_t idx;
+  unsigned char const *pdata = ptr;
+
+  for (idx = 0; idx < len; idx++)
+  {
+    iar_fputc((int)*pdata);
+    pdata++;
+  }
+  return len;
+}
+#endif /* __ICCARM__ */
+
+/* USER CODE END 4 */
+
+
+/* USER CODE BEGIN 5 */
 /**
   * @brief  Alarm callback
   * @param  hrtc : RTC handle
@@ -554,10 +557,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 }
 
 
-/* USER CODE END 4 */
+/* USER CODE END 5 */
 
 
-/* USER CODE BEGIN 5 */
+/* USER CODE BEGIN 6 */
 // Timestamp string for logging with printf:
 char * timestamp()
 {
@@ -586,7 +589,7 @@ char * timestamp()
 
 
 }
-/* USER CODE END 5 */
+/* USER CODE END 6 */
 
 
 
