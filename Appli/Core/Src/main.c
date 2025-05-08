@@ -42,13 +42,13 @@
 #define TEST_PERIOD	60
 #define UART_DEBUG				//Switch on general debugging
 #define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
-#define TEST_RTC				// Control flag to measure timer integrity using RTC
-#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
+//#define TEST_RTC				// Control flag to measure timer integrity using RTC
+//#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
 
 // Define maximum data length buffer for samples
 #define MAX_DATA_LEN 8092 //4096
 // Define flag to indicate that sampled data be transferred via UART
-//#define UART_TRANSFER
+#define UART_TRANSFER
 
 //Flag to process raw ADC values
 //#define RAW_ADC
