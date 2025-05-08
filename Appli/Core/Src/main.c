@@ -38,11 +38,17 @@
 /* USER CODE BEGIN PD */
 // Modify print statement to add time-stamp at beginning:
 #define print_log(f_, ...) printf("%s ", timestamp()), printf((f_), ##__VA_ARGS__), printf("\n")
-// Define flag for UART logging
+// Define flags for UART logging
 #define TEST_PERIOD	60
 #define UART_DEBUG				//Switch on general debugging
 #define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
-#define TEST_RTC				// Measure Timer test period using RTC
+//#define TEST_RTC				// Control flag to measure timer integrity using RTC
+//#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
+
+// Define maximum data length buffer for samples
+#define MAX_DATA_LEN 8092 //4096
+// Define flag to indicate that sampled data be transferred via UART
+#define UART_TRANSFER
 
 //Flag to process raw ADC values
 //#define RAW_ADC
@@ -71,21 +77,23 @@ UART_HandleTypeDef huart3;
 /* USER CODE BEGIN PV */
 volatile unsigned int rtc_flg = 0;
 volatile unsigned int itr_cnt = 0;
-volatile unsigned int sample_flg = 0;
+volatile unsigned int uart_transfer_flg = 0;
 char * timestamp();
 uint16_t adc_mv(unsigned int);
+void uart_data_transfer(void);
 char *time_str = "";
 
 unsigned int exp_cnts = 0;  //Expected sample count for timer test period
 // Sampling attributes
 float SYS_CLK  = 3E+8; //300MHz
-float SAMPLE_FREQ =  1E+0;
+float SAMPLE_FREQ =  2E+1;
 float TIMER1_FREQ = 1E+4;
 unsigned int TIMER1_ARR = 0; // Timer1 Counter
-//unsigned int NUM_OV_PER_SAM_PER = 0; //Number of overflows per sample period
-unsigned int PSC;
+unsigned int PSC = 0;		//Timer Prescaler
+unsigned int ADC_CONVS_PER_SEC = 0; 	//Number of ADC conversions per sec.
 unsigned int adc_val, adc_val_mv;
-
+uint16_t adc_data[MAX_DATA_LEN];
+unsigned int num_uart_transfers = 0;
 
 
 /* USER CODE END PV */
@@ -124,6 +132,7 @@ int iar_fputc(int ch);
   * @retval int
   */
 int main(void)
+
 {
 
   /* USER CODE BEGIN 1 */
@@ -133,11 +142,13 @@ int main(void)
 	{
 		TIMER1_ARR = 1;
 		PSC =  (int) ( SYS_CLK / (2 * TIMER1_FREQ)) - 1;
+		ADC_CONVS_PER_SEC = TIMER1_FREQ / (TIMER1_ARR + 1);
 	}
 	else
 	{
 		TIMER1_ARR = (TIMER1_FREQ / SAMPLE_FREQ) - 1;
 		PSC =  (int) ( SYS_CLK / (TIMER1_FREQ)) - 1;
+		ADC_CONVS_PER_SEC = TIMER1_FREQ / (TIMER1_ARR + 1);
 	}
   /* USER CODE END 1 */
 
@@ -187,6 +198,25 @@ int main(void)
   print_log("PSC: %d\n\r",PSC);
   print_log("TIMER1_ARR: %d\n\r",TIMER1_ARR);
   print_log ("SAMPLE_FREQ: %d\n\r",(int) SAMPLE_FREQ);
+  print_log ("ADC_CONVS_PER_SEC: %d\n\r", ADC_CONVS_PER_SEC);
+  /* Clock frequencies */
+  /*
+  print_log("SysClockFreq: %lu\n\r",HAL_RCC_GetSysClockFreq());
+  print_log("HCLKFreq: %lu\n\r",HAL_RCC_GetHCLKFreq());
+  print_log("PLK1Freq: %lu\n\r",HAL_RCC_GetPCLK1Freq());
+  print_log("PLK2Freq: %lu\n\r",HAL_RCC_GetPCLK2Freq());
+  */
+  // TEST bit extractor:
+  /*
+  unsigned int REG_VAL = RCC->CCIPR1;
+  unsigned int mask = 0x02;
+  unsigned int bitshift = 24;
+  unsigned res = ( ( mask << bitshift ) & REG_VAL ) >> bitshift;
+  print_log("REG_VAL: %lu\n\r",REG_VAL);
+  print_log("mask: %lu\n\r",mask);
+  print_log("bitshift: %lu\n\r",bitshift);
+  print_log("Selected register bits val: %lu\n\r",res);
+  */
 #ifdef TEST_RTC
   print_log("(Test period measured using RTC clock) \n\r");
 #endif
@@ -199,7 +229,7 @@ int main(void)
   }
 
 
-  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+
 #ifdef TEST_RTC
   MX_RTC_Init();  //Start the RTC clock
   print_log("Timestamp -> Start .. \n\r");
@@ -208,11 +238,13 @@ int main(void)
   {
    	  Error_Handler();
   }
+
   // Start TIMER1
   if(HAL_TIM_Base_Start(&htim1) != HAL_OK)
   {
 	 Error_Handler();
   }
+
   while (1)
   {
 
@@ -227,33 +259,58 @@ int main(void)
 		  rtc_flg = 0;
 		  //Stop timer
 		  HAL_TIM_Base_Stop(&htim1);
+		  //Perform test on UART transfer time
+		  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_RESET);
+#ifdef UART_TRANSFER_TEST
+		  unsigned int num_test_runs = 100;
+		  print_log ("UART TRANSFER TEST FOR SAMPLED DATA: -------------\n\r");
+		  for (int i = 0; i < num_test_runs; i++)
+		  {
+			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
+			  uart_data_transfer();
+			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
+			  HAL_Delay(50);
+		  }
+#endif
+
 		  break;
 
 	  }
 #endif
 
-	  if (sample_flg == 1)
+#ifdef UART_TRANSFER
+	  if (uart_transfer_flg == 1)
 	  {
-		  sample_flg = 0;
-		  // Sample ADC
+		  uart_transfer_flg = 0;
 
+		  // Send sampled data to PC
 #ifdef UART_DEBUG_SAMPLING
-#ifdef RAW_ADC
-		  print_log ("ADC value: %d  Sample Count: %d\n\r",adc_val,itr_cnt);
-#else
-		  print_log ("ADC value (mV): %d  Sample Count: %d\n\r",adc_mv(adc_val),itr_cnt);
-#endif
+		  print_log ("1 second of conversion complete .....\n\r");
 #endif
 
+		  uart_data_transfer();
+#ifdef UART_DEBUG_SAMPLING
+		  //print_log ("UART Transfer of %d sample(s) complete\n\r",ADC_CONVS_PER_SEC);
+		  print_log ("\n\r");
+#endif
+
+		  num_uart_transfers += 1;
+		  unsigned int NUM_TEST_TRANSFERS = 10;
+		  if(num_uart_transfers == NUM_TEST_TRANSFERS)
+		  {
+			  HAL_TIM_Base_Stop(&htim1); // Will delete after initial testing
+			  break;
+		  }
 
 	  }
+#endif
+
 
   }
 
-  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+
 #ifdef UART_DEBUG
   	print_log("Timestamp -> End .. \n\r");
-	print_log ("Int. Ctr value: %d\n\r",itr_cnt);
 #endif
 
 
@@ -518,7 +575,7 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
+  huart3.Init.BaudRate = 460800; //115200;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_ODD;
@@ -567,10 +624,10 @@ static void MX_GPIO_Init(void)
   /* USER CODE BEGIN MX_GPIO_Init_2 */
   /*Configure GPIO pin Output Level */
     //HAL_GPIO_WritePin(GPIOD, LD2_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_RESET);
 
     /*Configure GPIO pins : LD2_Pin LD1_Pin */
-    GPIO_InitStruct.Pin = GPIO_PIN_13;
+    GPIO_InitStruct.Pin = GPIO_PIN_0;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -671,6 +728,38 @@ uint16_t adc_mv(unsigned int val)
 }
 
 
+void uart_data_transfer(void)
+{
+	// Checking data
+	uint16_t val;
+	for (int i = 0; i < ADC_CONVS_PER_SEC;i++)
+	{
+
+#ifdef RAW_ADC
+#ifdef UART_DEBUG
+		printf("%d\n\r",adc_data[i]);
+#endif
+		HAL_UART_Transmit(&huart3, (uint8_t *)&adc_data[i], sizeof(adc_data[i]), 1);
+#else
+#ifdef UART_DEBUG
+		//printf("%d\n\r",adc_mv(adc_data[i]));
+#endif
+		val = adc_mv(adc_data[i]);
+		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
+#endif
+
+
+
+		// Use this to make transfer more efficient - TBD
+
+	}
+
+
+
+
+}
+
+
 /* USER CODE END 5 */
 
 
@@ -698,11 +787,20 @@ void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
   */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	sample_flg = 1;
-	adc_val = HAL_ADC_GetValue(&hadc1);
+	adc_data[itr_cnt] = HAL_ADC_GetValue(&hadc1);
 	itr_cnt += 1;
+	if (itr_cnt == ADC_CONVS_PER_SEC)
+	{
+		uart_transfer_flg = 1;
+		itr_cnt = 0;
+
+	}
+
+	// For test purposes: ----
 	// Toggle the Green LED
-    //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+    //Toggle output to scope
+    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
 }
 
 

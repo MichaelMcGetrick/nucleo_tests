@@ -198,6 +198,7 @@ void SystemCoreClockUpdate(void)
   float_t pllfracn, pllvco;
 
   /* Get SYSCLK source -------------------------------------------------------*/
+
   switch (RCC->CFGR & RCC_CFGR_SWS)
   {
   case 0x00:  /* HSI used as system clock source (default after reset) */
