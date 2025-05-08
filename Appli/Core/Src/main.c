@@ -42,13 +42,13 @@
 #define TEST_PERIOD	60
 #define UART_DEBUG				//Switch on general debugging
 #define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
-//#define TEST_RTC				// Control flag to measure timer integrity using RTC
-//#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
+#define TEST_RTC				// Control flag to measure timer integrity using RTC
+#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
 
 // Define maximum data length buffer for samples
 #define MAX_DATA_LEN 8092 //4096
 // Define flag to indicate that sampled data be transferred via UART
-#define UART_TRANSFER
+//#define UART_TRANSFER
 
 //Flag to process raw ADC values
 //#define RAW_ADC
@@ -86,7 +86,7 @@ char *time_str = "";
 unsigned int exp_cnts = 0;  //Expected sample count for timer test period
 // Sampling attributes
 float SYS_CLK  = 3E+8; //300MHz
-float SAMPLE_FREQ =  2E+1;
+float SAMPLE_FREQ =  1E+0;
 float TIMER1_FREQ = 1E+4;
 unsigned int TIMER1_ARR = 0; // Timer1 Counter
 unsigned int PSC = 0;		//Timer Prescaler
@@ -262,7 +262,7 @@ int main(void)
 		  //Perform test on UART transfer time
 		  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_RESET);
 #ifdef UART_TRANSFER_TEST
-		  unsigned int num_test_runs = 100;
+		  unsigned int num_test_runs = 10;
 		  print_log ("UART TRANSFER TEST FOR SAMPLED DATA: -------------\n\r");
 		  for (int i = 0; i < num_test_runs; i++)
 		  {
@@ -311,6 +311,9 @@ int main(void)
 
 #ifdef UART_DEBUG
   	print_log("Timestamp -> End .. \n\r");
+#ifdef TEST_RTC
+  	print_log("Sample count: %d \n\r",itr_cnt);
+#endif
 #endif
 
 
@@ -789,12 +792,17 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	adc_data[itr_cnt] = HAL_ADC_GetValue(&hadc1);
 	itr_cnt += 1;
+#ifdef TEST_RTC
+	print_log("Sample count: %d\n\r",itr_cnt);
+#else
 	if (itr_cnt == ADC_CONVS_PER_SEC)
 	{
 		uart_transfer_flg = 1;
 		itr_cnt = 0;
 
 	}
+#endif
+
 
 	// For test purposes: ----
 	// Toggle the Green LED
