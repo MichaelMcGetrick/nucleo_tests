@@ -86,7 +86,7 @@ char *time_str = "";
 unsigned int exp_cnts = 0;  //Expected sample count for timer test period
 // Sampling attributes
 float SYS_CLK  = 3E+8; //300MHz
-float SAMPLE_FREQ =  1E+0;
+float SAMPLE_FREQ =  2E+2;
 float TIMER1_FREQ = 1E+4;
 unsigned int TIMER1_ARR = 0; // Timer1 Counter
 unsigned int PSC = 0;		//Timer Prescaler
@@ -143,12 +143,14 @@ int main(void)
 		TIMER1_ARR = 1;
 		PSC =  (int) ( SYS_CLK / (2 * TIMER1_FREQ)) - 1;
 		ADC_CONVS_PER_SEC = TIMER1_FREQ / (TIMER1_ARR + 1);
+		ADC_CONVS_PER_SEC = ADC_CONVS_PER_SEC + 1;
 	}
 	else
 	{
 		TIMER1_ARR = (TIMER1_FREQ / SAMPLE_FREQ) - 1;
 		PSC =  (int) ( SYS_CLK / (TIMER1_FREQ)) - 1;
 		ADC_CONVS_PER_SEC = TIMER1_FREQ / (TIMER1_ARR + 1);
+		ADC_CONVS_PER_SEC = ADC_CONVS_PER_SEC + 1; //To see complete cycle
 	}
   /* USER CODE END 1 */
 
@@ -283,6 +285,10 @@ int main(void)
 	  {
 		  uart_transfer_flg = 0;
 
+		  // Toggle the Green LED
+		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+		  //Toggle output to scope
+		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
 		  // Send sampled data to PC
 #ifdef UART_DEBUG_SAMPLING
 		  print_log ("1 second of conversion complete .....\n\r");
@@ -301,6 +307,7 @@ int main(void)
 			  HAL_TIM_Base_Stop(&htim1); // Will delete after initial testing
 			  break;
 		  }
+
 
 	  }
 #endif
@@ -745,10 +752,10 @@ void uart_data_transfer(void)
 		HAL_UART_Transmit(&huart3, (uint8_t *)&adc_data[i], sizeof(adc_data[i]), 1);
 #else
 #ifdef UART_DEBUG
-		//printf("%d\n\r",adc_mv(adc_data[i]));
+		printf("%d\n\r",adc_mv(adc_data[i]));
 #endif
-		val = adc_mv(adc_data[i]);
-		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
+		//val = adc_mv(adc_data[i]);
+		//HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
 #endif
 
 
@@ -804,11 +811,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 #endif
 
 
-	// For test purposes: ----
-	// Toggle the Green LED
-    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
-    //Toggle output to scope
-    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
 }
 
 
