@@ -24,7 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
+#include "arm_math.h"
 
 
 /* USER CODE END Includes */
@@ -46,7 +46,7 @@
 //#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
 
 // Define maximum data length buffer for samples
-#define MAX_DATA_LEN 8092 //4096
+#define MAX_DATA_LEN 8192
 // Define flag to indicate that sampled data be transferred via UART
 #define UART_TRANSFER
 
@@ -57,6 +57,11 @@
 #define VREF                       (3300UL)
 //Conversion factor for 12-bit ADC resolution
 #define ADC_BIT_FAC					4096 - 1
+
+#define FFT_DATA_TRANSFER
+#define FFT_TEST
+#define FFT_MAX_BUFFER_SIZE	8192
+
 
 /* USER CODE END PD */
 
@@ -81,12 +86,13 @@ volatile unsigned int uart_transfer_flg = 0;
 char * timestamp();
 uint16_t adc_mv(unsigned int);
 void uart_data_transfer(void);
+void uart_fft_data_transfer(void);
 char *time_str = "";
 
 unsigned int exp_cnts = 0;  //Expected sample count for timer test period
 // Sampling attributes
 float SYS_CLK  = 3E+8; //300MHz
-float SAMPLE_FREQ =  2E+2;
+float SAMPLE_FREQ =  1E+3;
 float TIMER1_FREQ = 1E+4;
 unsigned int TIMER1_ARR = 0; // Timer1 Counter
 unsigned int PSC = 0;		//Timer Prescaler
@@ -95,6 +101,15 @@ unsigned int adc_val, adc_val_mv;
 uint16_t adc_data[MAX_DATA_LEN];
 unsigned int num_uart_transfers = 0;
 
+//Attributes required for FFT processing:
+#ifdef FFT_DATA_TRANSFER
+unsigned int FFT_BUFFER_SIZE = 0;
+float32_t fft_in[FFT_MAX_BUFFER_SIZE];
+float32_t fft_out[FFT_MAX_BUFFER_SIZE];
+uint8_t fft_flg = 0; //Set for FFT calculation
+//Handler for FFT processing:
+arm_rfft_fast_instance_f32 fftHandler;
+#endif
 
 /* USER CODE END PV */
 
@@ -136,8 +151,9 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	// Initialise timer variables:
 
+
+	// Initialise timer variables:
 	if (SAMPLE_FREQ >= 1.0E+4)
 	{
 		TIMER1_ARR = 1;
@@ -189,6 +205,28 @@ int main(void)
   MX_USART3_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+
+#ifdef FFT_DATA_TRANSFER
+  //Initialise for FFT:
+  // Get the required fft buffer size:
+  FFT_BUFFER_SIZE = 1;
+  while(1)
+  {
+	  if ( (FFT_BUFFER_SIZE % 2) == 0)
+	  {
+		  if (FFT_BUFFER_SIZE > ADC_CONVS_PER_SEC)
+		  {
+			  // Set buffer size to previous fft bin length:
+			  FFT_BUFFER_SIZE = FFT_BUFFER_SIZE/2;
+			  break;
+		  }
+
+	  }
+	  FFT_BUFFER_SIZE *= 2;
+  }
+  arm_rfft_fast_init_f32(&fftHandler,FFT_BUFFER_SIZE);
+
+#endif
 
 
   /* USER CODE END 2 */
@@ -294,7 +332,12 @@ int main(void)
 		  print_log ("1 second of conversion complete .....\n\r");
 #endif
 
+#ifdef FFT_DATA_TRANSFER
+		  uart_fft_data_transfer();
+#else
 		  uart_data_transfer();
+#endif
+
 #ifdef UART_DEBUG_SAMPLING
 		  //print_log ("UART Transfer of %d sample(s) complete\n\r",ADC_CONVS_PER_SEC);
 		  print_log ("\n\r");
@@ -741,7 +784,7 @@ uint16_t adc_mv(unsigned int val)
 void uart_data_transfer(void)
 {
 	// Checking data
-	uint16_t val;
+	//uint16_t val;
 	for (int i = 0; i < ADC_CONVS_PER_SEC;i++)
 	{
 
@@ -759,16 +802,60 @@ void uart_data_transfer(void)
 #endif
 
 
-
-		// Use this to make transfer more efficient - TBD
-
 	}
-
-
 
 
 }
 
+
+#ifdef FFT_DATA_TRANSFER
+void uart_fft_data_transfer(void)
+{
+
+	//Initialise data for FFT:
+	for (int i=0; i<FFT_BUFFER_SIZE; i++)
+	{
+		fft_in[i] = (float32_t) adc_data[i];
+		fft_out[i] = 0.0;
+	}
+
+
+	float max_freq = 0.0;
+	float curr_val = 0.0;
+	float max_val = 0.0;
+
+	arm_rfft_fast_f32(&fftHandler,&fft_in[0],&fft_out[0],fft_flg);
+
+#ifdef FFT_TEST
+	// For test purposes , get maximum frequency in bin:
+	int start_index = 2;   //The first complex number is the DC offset
+	int bin_index = 1;
+	for (int i=start_index; i < FFT_BUFFER_SIZE; i+=2)
+	{
+		curr_val = sqrt(fft_out[i] * fft_out[i] + fft_out[i+1] * fft_out[i+1]);
+		if (curr_val > max_val)
+		{
+			max_val = curr_val;
+			max_freq = ((float) bin_index * SAMPLE_FREQ) / (float) FFT_BUFFER_SIZE;
+		}
+		bin_index ++;
+
+	}
+	printf("Max Freq: %d (Hz) \n\r",(int) max_freq);
+#endif
+
+	// Transfer FFT via UART:
+	uint16_t fft_mag = 0;
+
+	for (int i=start_index; i < FFT_BUFFER_SIZE; i+=2)
+	{
+		fft_mag = (uint16_t) sqrt(fft_out[i] * fft_out[i] + fft_out[i+1] * fft_out[i+1]);
+		//HAL_UART_Transmit(&huart3, (uint8_t *)&fft_mag, sizeof(fft_mag), 1);
+		//printf("%d\n\r",(int) fft_mag);
+	}
+
+}
+#endif
 
 /* USER CODE END 5 */
 
