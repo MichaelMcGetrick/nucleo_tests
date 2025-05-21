@@ -40,8 +40,8 @@
 #define print_log(f_, ...) printf("%s ", timestamp()), printf((f_), ##__VA_ARGS__), printf("\n")
 // Define flags for UART logging
 #define TEST_PERIOD	60
-#define UART_DEBUG				//Switch on general debugging
-#define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
+//#define UART_DEBUG				//Switch on general debugging
+//#define UART_DEBUG_SAMPLING		//Switch on debugging during within samplin loop
 //#define TEST_RTC				// Control flag to measure timer integrity using RTC
 //#define UART_TRANSFER_TEST	   //Control flag to enable UART transfer time testing
 
@@ -100,9 +100,9 @@ unsigned int ADC_CONVS_PER_SEC = 0; 	//Number of ADC conversions per sec.
 unsigned int adc_val, adc_val_mv;
 uint16_t adc_data[MAX_DATA_LEN];
 unsigned int num_uart_transfers = 0;
-
 //Flag to indicate data type:
 uint8_t data_mode_flg;	//0: time data; 1: frequency data
+uint16_t data_mask = 0; //Data type mask for sampled data
 
 //Attributes required for FFT processing:
 unsigned int FFT_BUFFER_SIZE = 0;
@@ -172,7 +172,19 @@ int main(void)
 	}
 
 	// Initialise data mode for raw signal (time data)
-	data_mode_flg = 1;
+	data_mode_flg = 0;
+	if (data_mode_flg == 0)
+	{
+		//Set MSB to 0 for time series
+		//data_mask = 0x00;
+		data_mask = (1 << 15);   //temp for testing
+	}
+	else
+	{
+		//Set MSB to 1 for FFT
+		data_mask = (1 << 15);
+
+	}
 
   /* USER CODE END 1 */
 
@@ -247,40 +259,24 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 #ifdef UART_DEBUG
+  //------------------------------------------------------------
   print_log("Starting timer test for stm32h7s3l8 ..... \n\r");
   print_log("PSC: %d\n\r",PSC);
   print_log("TIMER1_ARR: %d\n\r",TIMER1_ARR);
   print_log ("SAMPLE_FREQ: %d\n\r",(int) SAMPLE_FREQ);
   print_log ("ADC_CONVS_PER_SEC: %d\n\r", ADC_CONVS_PER_SEC);
-  /* Clock frequencies */
-  /*
-  print_log("SysClockFreq: %lu\n\r",HAL_RCC_GetSysClockFreq());
-  print_log("HCLKFreq: %lu\n\r",HAL_RCC_GetHCLKFreq());
-  print_log("PLK1Freq: %lu\n\r",HAL_RCC_GetPCLK1Freq());
-  print_log("PLK2Freq: %lu\n\r",HAL_RCC_GetPCLK2Freq());
-  */
-  // TEST bit extractor:
-  /*
-  unsigned int REG_VAL = RCC->CCIPR1;
-  unsigned int mask = 0x02;
-  unsigned int bitshift = 24;
-  unsigned res = ( ( mask << bitshift ) & REG_VAL ) >> bitshift;
-  print_log("REG_VAL: %lu\n\r",REG_VAL);
-  print_log("mask: %lu\n\r",mask);
-  print_log("bitshift: %lu\n\r",bitshift);
-  print_log("Selected register bits val: %lu\n\r",res);
-  */
+#endif
+
 #ifdef TEST_RTC
   print_log("(Test period measured using RTC clock) \n\r");
 #endif
-#endif
+
 
   // calibrate ADC for better accuracy and start it w/ interrupt
   if(HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
   {
 	  Error_Handler();
   }
-
 
 
 #ifdef TEST_RTC
@@ -648,7 +644,7 @@ static void MX_USART3_UART_Init(void)
   huart3.Init.BaudRate = 460800; //115200;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_ODD;
+  huart3.Init.Parity = UART_PARITY_NONE;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
@@ -801,7 +797,7 @@ uint16_t adc_mv(unsigned int val)
 void uart_data_transfer(void)
 {
 	// Checking data
-	//uint16_t val;
+	uint16_t val;
 	for (int i = 0; i < ADC_CONVS_PER_SEC;i++)
 	{
 
@@ -814,8 +810,10 @@ void uart_data_transfer(void)
 #ifdef UART_DEBUG
 		printf("%d\n\r",adc_mv(adc_data[i]));
 #endif
-		//val = adc_mv(adc_data[i]);
-		//HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
+		val = data_mask | adc_mv(adc_data[i]);
+		//printf("%d\n\r",adc_mv(adc_data[i]));
+		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
+
 #endif
 
 
@@ -867,6 +865,7 @@ void uart_fft_data_transfer(void)
 #endif
 
 	// Transfer FFT via UART:
+	uint16_t val;
 	uint16_t fft_mag = 0;
 	for (int i=start_index; i < FFT_BUFFER_SIZE; i+=2)
 	{
@@ -876,8 +875,9 @@ void uart_fft_data_transfer(void)
 		{
 			fft_mag = 0.0;
 		}
-		//HAL_UART_Transmit(&huart3, (uint8_t *)&fft_mag, sizeof(fft_mag), 1);
-		printf("%d\n\r",(int) fft_mag);
+		val = data_mask | fft_mag;
+		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
+		//printf("%d\n\r",(int) fft_mag);
 	}
 
 }
