@@ -61,6 +61,13 @@
 //#define FFT_TEST		//Flag for test code for a single frequency signal
 #define FFT_MAX_BUFFER_SIZE	8192
 
+//Request code defines
+#define REQ_TIME_DATA	0x4000
+#define REQ_FFT_DATA	0x8000
+#define RX_OK			0x01
+#define RX_BUF_LEN		2
+
+//#define SANDBOX_TEST
 
 /* USER CODE END PD */
 
@@ -86,6 +93,8 @@ char * timestamp();
 uint16_t adc_mv(unsigned int);
 void uart_data_transfer(void);
 void uart_fft_data_transfer(void);
+void data_type_req_check(void);
+void sandbox_test(void);
 //char *time_str = "";
 char time_str[15];
 
@@ -104,10 +113,16 @@ unsigned int num_uart_transfers = 0;
 uint8_t data_mode_flg;	//0: time data; 1: frequency data
 uint16_t data_mask = 0; //Data type mask for sampled data
 
+//Attributes for UART:
+uint8_t rx_buf[RX_BUF_LEN];
+volatile uint8_t rx_uart_flg;
+volatile uint8_t tx_uart_flg;
+
 //Attributes required for FFT processing:
 unsigned int FFT_BUFFER_SIZE = 0;
 float32_t fft_in[FFT_MAX_BUFFER_SIZE];
 float32_t fft_out[FFT_MAX_BUFFER_SIZE];
+uint16_t fft_bin[FFT_MAX_BUFFER_SIZE];
 uint8_t fft_flg = 0; //Set for FFT calculation
 //Handler for FFT processing:
 arm_rfft_fast_instance_f32 fftHandler;
@@ -172,17 +187,17 @@ int main(void)
 	}
 
 	// Initialise data mode for raw signal (time data)
+	rx_uart_flg = 1; // To prevent wait for FRX on first data send
 	data_mode_flg = 0;
 	if (data_mode_flg == 0)
 	{
 		//Set MSB to 0 for time series
-		//data_mask = 0x00;
-		data_mask = (1 << 15);   //temp for testing
+		data_mask = REQ_TIME_DATA;
 	}
 	else
 	{
 		//Set MSB to 1 for FFT
-		data_mask = (1 << 15);
+		data_mask = REQ_FFT_DATA;
 
 	}
 
@@ -216,17 +231,25 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_TIM1_Init();
-  MX_RTC_Init();
-  MX_USART3_UART_Init();
-  MX_ADC1_Init();
-  /* USER CODE BEGIN 2 */
 
-  //Initialise for FFT:
-  // Get the required fft buffer size:
+  //Initialise buffer size for FFT:
   FFT_BUFFER_SIZE = 1;
+
+#ifdef SANDBOX_TEST
+  /* Only initialize required peripherals*/
+	MX_GPIO_Init();
+	MX_USART3_UART_Init();
+    sandbox_test(); //Sandbox testing to solve issue of use of TX and RX
+#else
+  /* Initialize all configured peripherals */
+   MX_GPIO_Init();
+   MX_TIM1_Init();
+   MX_RTC_Init();
+   MX_USART3_UART_Init();
+   MX_ADC1_Init();
+
+#endif
+
   while(1)
   {
 	  if ( (FFT_BUFFER_SIZE % 2) == 0)
@@ -272,6 +295,7 @@ int main(void)
 #endif
 
 
+
   // calibrate ADC for better accuracy and start it w/ interrupt
   if(HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
   {
@@ -283,6 +307,7 @@ int main(void)
   MX_RTC_Init();  //Start the RTC clock
   print_log("Timestamp -> Start .. \n\r");
 #endif
+
   if(HAL_ADC_Start_IT(&hadc1) != HAL_OK)
   {
    	  Error_Handler();
@@ -328,28 +353,40 @@ int main(void)
 #endif
 
 #ifdef UART_TRANSFER
+
 	  if (uart_transfer_flg == 1)
 	  {
 		  uart_transfer_flg = 0;
 
 		  // Toggle the Green LED
-		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+		  //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
 		  //Toggle output to scope
-		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
+		  //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_0);
 		  // Send sampled data to PC
 #ifdef UART_DEBUG_SAMPLING
 		  print_log ("1 second of conversion complete .....\n\r");
 #endif
 
-if (data_mode_flg == 0)
-{
-	uart_data_transfer();
-}
-else
-{
-	uart_fft_data_transfer();
-}
+		// Check for data type change  request:
+		/*
+		  while (rx_uart_flg == 0)
+		{
+			// Wait for RX message before sending next set of data
+		}
+		*/
 
+		//  data_type_req_check ();  //Remove until RX processing resolved
+		if (data_mode_flg == 0)
+		{
+			uart_data_transfer();
+		}
+		else
+		{
+			uart_fft_data_transfer();
+		}
+
+		// Initiate UART receive:
+		//HAL_UART_Receive_IT(&huart3, rx_buf, RX_BUF_LEN);
 
 #ifdef UART_DEBUG_SAMPLING
 		  //print_log ("UART Transfer of %d sample(s) complete\n\r",ADC_CONVS_PER_SEC);
@@ -361,11 +398,13 @@ else
 		  if(num_uart_transfers == NUM_TEST_TRANSFERS)
 		  {
 			  HAL_TIM_Base_Stop(&htim1); // Will delete after initial testing
+			  //HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_SET); // To show ended
 			  break;
 		  }
 
 
 	  }
+
 #endif
 
 
@@ -796,31 +835,41 @@ uint16_t adc_mv(unsigned int val)
 
 void uart_data_transfer(void)
 {
-	// Checking data
-	uint16_t val;
-	for (int i = 0; i < ADC_CONVS_PER_SEC;i++)
-	{
 
+#ifdef UART_DEBUG
+		uint16_t val;
+		for (int i = 0; i < ADC_CONVS_PER_SEC;i++)
+		{
 #ifdef RAW_ADC
-#ifdef UART_DEBUG
-		printf("%d\n\r",adc_data[i]);
-#endif
-		HAL_UART_Transmit(&huart3, (uint8_t *)&adc_data[i], sizeof(adc_data[i]), 1);
+			printf("%d\n\r",adc_data[i]);
 #else
-#ifdef UART_DEBUG
-		printf("%d\n\r",adc_mv(adc_data[i]));
-#endif
-		val = data_mask | adc_mv(adc_data[i]);
-		//printf("%d\n\r",adc_mv(adc_data[i]));
-		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
-
+			printf("%d\n\r",adc_mv(adc_data[i]));
 #endif
 
+		}
+#else
+		//Perform one-shot transmit for samples
+		// Transmit all in one go
+		for (int i=0;i < ADC_CONVS_PER_SEC; i++)
+	    {
+	    	// Convert to mV and apply mask
+			//adc_data[i] = data_mask | adc_data[i];
+	    	adc_data[i] = data_mask | adc_mv(adc_data[i]);
 
-	}
+
+	    }
+	    //HAL_UART_Transmit_IT(&huart3, (uint8_t *)&adc_data, ADC_CONVS_PER_SEC);
+		while (HAL_UART_Transmit_IT(&huart3, (uint8_t *)&adc_data, ADC_CONVS_PER_SEC * 2) != HAL_OK) {}
+		// Wait till transmission complete:
+	    while (tx_uart_flg == 0) {};
+	    // Reset flag:
+	    tx_uart_flg = 0;
+	    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
 
 
-}
+#endif
+
+}//uart_data_transfer
 
 
 void uart_fft_data_transfer(void)
@@ -865,8 +914,9 @@ void uart_fft_data_transfer(void)
 #endif
 
 	// Transfer FFT via UART:
-	uint16_t val;
+
 	uint16_t fft_mag = 0;
+	int index = 0;
 	for (int i=start_index; i < FFT_BUFFER_SIZE; i+=2)
 	{
 		fft_mag = (uint16_t) sqrt(fft_out[i] * fft_out[i] + fft_out[i+1] * fft_out[i+1]);
@@ -875,12 +925,128 @@ void uart_fft_data_transfer(void)
 		{
 			fft_mag = 0.0;
 		}
-		val = data_mask | fft_mag;
-		HAL_UART_Transmit(&huart3, (uint8_t *)&val, sizeof(val), 1);
-		//printf("%d\n\r",(int) fft_mag);
+		fft_bin[index] = data_mask | fft_mag;
+		index += 1;
+	}
+
+	while (HAL_UART_Transmit_IT(&huart3, (uint8_t *)&fft_bin, FFT_BUFFER_SIZE * 2) != HAL_OK) {}
+	// Wait till transmission complete:
+	while (tx_uart_flg == 0) {};
+	// Reset flag:
+	tx_uart_flg = 0;
+	HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+
+
+}//uart_fft_data_transfer
+
+
+void data_type_req_check(void)
+{
+	if (rx_uart_flg == 1)
+	{
+
+		// Data type change requested
+		uint16_t val = (uint16_t) (rx_buf[1] << 8) | (uint16_t) rx_buf[0];
+
+		if( val == RX_OK)
+		{
+			// Simple RX ACK - no data type to reset
+			//HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+			return;
+		}
+		if (val == REQ_TIME_DATA )
+		{
+		 data_mode_flg = 0;
+		 //Set MSB to 0 for time series
+		 data_mask = REQ_TIME_DATA;
+		 //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+
+		}
+		else if (val == REQ_FFT_DATA )
+		{
+
+		  data_mode_flg = 1;
+		  //Set MSB to 1 for FFT
+		  data_mask = REQ_FFT_DATA;
+		  //HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+		}
+
+		//Reset for next data request change:
+		rx_uart_flg = 0;
 	}
 
 }
+
+void sandbox_test(void)
+{
+	// This is a test to solve the issues of using TX and RX together
+	// Both work separately, but do not work when used together
+	// HAL_UART_Receive_IT (and HAL_UART_Receive) do not work when used
+	// in conjunction with HAL_UART_Transmit_IT
+
+	uint16_t data[256];
+	  for (int i=0;i < 256; i++)
+	  {
+		  data[i] = 4095; //(uint16_t) i;
+	  }
+	  rx_uart_flg = 0;
+	  data_mask = REQ_TIME_DATA;
+	  //HAL_UART_Receive_IT(&huart3, rx_buf, RX_BUF_LEN);
+	  tx_uart_flg = 0;
+	  int cnt = 0;
+	  //HAL_StatusTypeDef status = 0;
+	  HAL_Delay (5000); //Just a delay for testing purposes
+	  rx_uart_flg = 1; //Currently enable continuation due to lack of interrupt trigger
+	  while (1)
+	  {
+		  HAL_Delay(1000); //Simulate sampling time
+
+		  // Transmit all in one go
+		  for (int i=0;i < 256; i++)
+		  {
+			  data[i] = data_mask | data[i];
+		  }
+
+		  HAL_UART_Transmit_IT(&huart3, (uint8_t *)&data, sizeof(data));
+		  // Wait till transmission complete:
+		  while (tx_uart_flg == 0) {};
+		  // Reset flag:
+		  tx_uart_flg = 0;
+
+		  // Wait for RX data:
+		  //HAL_UART_Receive_IT(&huart3, rx_buf, RX_BUF_LEN);
+		  //while (HAL_UART_Receive_IT(&huart3, rx_buf, RX_BUF_LEN) != HAL_OK)
+		  /*
+		  while (HAL_UART_Receive(&huart3, rx_buf, RX_BUF_LEN,200) != HAL_OK)
+		  {
+			  //do nothing
+		  }
+		  //if (status == HAL_OK)
+		  //{
+			  // We have HAL_OK - toggle the pin
+			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+		  //}
+		   */
+		  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+		  //while (rx_uart_flg == 0) {};  //Wait until RX interrupt called
+		  //data_type_req_check();
+		  //Reset flag:
+		  rx_uart_flg = 0;
+
+		  cnt += 1;
+
+		  if (cnt == 10)
+		  {
+			exit (0);
+		  }
+
+
+	  }
+
+}//sandbox_test
+
+
+
 
 /* USER CODE END 5 */
 
@@ -922,6 +1088,22 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 	}
 #endif
 
+
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	rx_uart_flg = 1;
+	HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+	//HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10,GPIO_PIN_SET);
+
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+	tx_uart_flg = 1;
+	//HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_10);
+	//HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10,GPIO_PIN_SET);
 
 }
 
